@@ -1,3 +1,7 @@
+import json
+import runpy
+import sys
+import types
 from pathlib import Path
 
 from src.anomaly_detector import AnomalyDetector
@@ -42,6 +46,29 @@ def test_anomalous_record_is_detected():
     assert event["type"] == "ANOMALY"
 
 
+def test_detector_reports_all_anomaly_reasons():
+    detector = AnomalyDetector()
+
+    record = {
+        "timestamp": "2026-09-20T10:06:00",
+        "service": "payment-service",
+        "response_time_ms": 501,
+        "cpu_percent": 81,
+        "memory_percent": 81,
+        "log_level": "WARNING",
+        "message": "Service is unhealthy"
+    }
+
+    event = detector.detect(record)
+
+    assert event["reasons"] == [
+        "High response time",
+        "High CPU utilization",
+        "High memory utilization",
+        "Error log detected",
+    ]
+
+
 def test_producer_publishes_event():
     topic = EventTopic("anomaly-events")
     producer = EventProducer(topic)
@@ -53,6 +80,14 @@ def test_producer_publishes_event():
 
     assert producer.publish(event)
     assert len(topic.get_messages()) == 1
+
+
+def test_producer_rejects_empty_event():
+    topic = EventTopic("anomaly-events")
+    producer = EventProducer(topic)
+
+    assert producer.publish(None) is False
+    assert topic.get_messages() == []
 
 
 def test_consumer_receives_event():
@@ -70,3 +105,72 @@ def test_consumer_receives_event():
     messages = consumer.consume()
 
     assert len(messages) == 1
+
+
+def test_topic_clear_removes_published_messages():
+    topic = EventTopic("anomaly-events")
+    topic.publish({"type": "ANOMALY"})
+
+    topic.clear()
+
+    assert topic.get_messages() == []
+
+
+def test_run_pipeline_processes_records(tmp_path):
+    data_file = tmp_path / "service_data.json"
+    data_file.write_text(json.dumps([
+        {
+            "timestamp": "2026-09-20T10:00:00",
+            "service": "payment-service",
+            "response_time_ms": 100,
+            "cpu_percent": 20,
+            "memory_percent": 30,
+            "log_level": "INFO",
+            "message": "Healthy"
+        },
+        {
+            "timestamp": "2026-09-20T10:01:00",
+            "service": "payment-service",
+            "response_time_ms": 700,
+            "cpu_percent": 20,
+            "memory_percent": 30,
+            "log_level": "INFO",
+            "message": "Slow"
+        }
+    ]), encoding="utf-8")
+
+    result = run_pipeline(str(data_file))
+
+    assert result["records_processed"] == 2
+    assert len(result["anomalies_detected"]) == 1
+    assert result["events_consumed"] == []
+
+
+def test_pipeline_script_prints_consumed_events(monkeypatch, capsys):
+    fake_consumer_module = types.ModuleType("event_consumer")
+
+    class FakeEventConsumer:
+        def __init__(self, topic):
+            self.topic = topic
+
+        def consume(self):
+            return [{
+                "timestamp": "2026-09-20T10:06:00",
+                "service": "payment-service",
+                "type": "ANOMALY",
+                "reasons": ["High response time"]
+            }]
+
+    fake_consumer_module.EventConsumer = FakeEventConsumer
+    monkeypatch.setitem(sys.modules, "event_consumer", fake_consumer_module)
+    monkeypatch.syspath_prepend(str(Path(__file__).parent.parent / "src"))
+
+    runpy.run_path(
+        str(Path(__file__).parent.parent / "src" / "aiops_pipeline.py"),
+        run_name="__main__",
+    )
+
+    output = capsys.readouterr().out
+    assert "AIOps Pipeline Result" in output
+    assert "Service: payment-service" in output
+    assert "Reasons: High response time" in output
