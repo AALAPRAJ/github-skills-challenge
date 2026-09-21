@@ -1,5 +1,7 @@
 # GitHub Challenge
 
+[![Python Coverage](https://github.com/AALAPRAJ/github-skills-challenge/actions/workflows/python-coverage.yml/badge.svg)](https://github.com/AALAPRAJ/github-skills-challenge/actions/workflows/python-coverage.yml)
+
 <img src="https://octodex.github.com/images/Professortocat_v2.png" align="right" height="200px" />
 
 Hey there!
